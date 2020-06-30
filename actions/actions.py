@@ -108,27 +108,27 @@ def main():
         entity = "person"
 
         # Google Ngrams: search for "person is <verb>"
-        items = get_following_words(f"{entity} is", k=1500)
+        items = get_following_words(f"{entity} is", k=5000)
         items = filter_and_sort(nlp, items)
 
         # Fall back to "person <verb>"
         if len(items) == 0:
-            items = get_following_words(entity, k=1500)
+            items = get_following_words(entity, k=5000)
             items = filter_and_sort(nlp, items)
 
-        event_freq["gngrams"] = items[:500]
+        event_freq["gngrams"] = items
 
         # BERT
         items = get_top_k_predictions(
-            bert_model, bert_tokenizer, f"The {entity} is [MASK].", mask="[MASK]", k=1500)
+            bert_model, bert_tokenizer, f"The {entity} is [MASK].", mask="[MASK]", k=5000)
         items = filter_and_sort(nlp, items)
-        event_freq["bert"] = items[:500]
+        event_freq["bert"] = items
 
         # RoBERTa
         items = get_top_k_predictions(
-            roberta_model, roberta_tokenizer, f"The {entity} is <mask>.", mask="<mask>", k=1500)
+            roberta_model, roberta_tokenizer, f"The {entity} is <mask>.", mask="<mask>", k=5000)
         items = filter_and_sort(nlp, items)
-        event_freq["roberta"] = items[:500]
+        event_freq["roberta"] = items
 
     for resource in ["gngrams", "bert", "roberta"]:
         for key in freq.keys():
@@ -137,14 +137,14 @@ def main():
             freq[key][resource] = count
 
     # Scale it
-    scaled = freq.copy()
+    scaled = {label: {} for label in freq.keys()}
 
     for resource in ["roberta", "bert", "gngrams", "true"]:
-        for label in scaled.keys():
-            all_sum = np.sum([freq[l][resource] for l in freq.keys()])
-            scaled[label][resource] = scaled[label][resource] * 1.0 / all_sum
+        all_sum = np.sum([freq[l][resource] for l in freq.keys()])
+        for label in freq.keys():
+            scaled[label][resource] = freq[label][resource] / all_sum
 
-    scaled = OrderedDict(sorted(scaled.items(), key=lambda x: x[1]["true"], reverse=True))
+    scaled = OrderedDict(sorted(scaled.items(), key=lambda x: freq[x[0]]["true"], reverse=True))
     draw_event_frequencies(scaled, "A person is ____")
     print_pred(bert_model, bert_tokenizer, roberta_model, roberta_tokenizer)
 
@@ -164,7 +164,7 @@ def get_top_k_predictions(bert_model, bert_tokenizer, text, mask="[MASK]", k=10)
         outputs = bert_model(tokens_tensor)
         predictions = outputs[0]
 
-    probs = predictions[0, masked_index].cpu().numpy()
+    probs = F.softmax(predictions[0, masked_index], dim=-1).cpu().numpy()
     top_k_probs = np.argpartition(probs, -k)[-k:]
     top_k_probs = top_k_probs[np.argsort(probs[top_k_probs])[::-1]]
     tokens = [t.replace("Ġ", "") for t in bert_tokenizer.convert_ids_to_tokens(top_k_probs)]
