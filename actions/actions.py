@@ -241,10 +241,7 @@ def draw_event_frequencies(freq, title):
     """
     Draw the event frequencies
     """
-    font = {'size': 16}
-
     sns.set(color_codes=True)
-    sns.set_context("notebook")
     sns.set_style("dark")
     plt.rc("text", usetex=False)
     sns.despine(left=True)
