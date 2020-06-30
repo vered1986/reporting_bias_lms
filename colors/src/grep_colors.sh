@@ -1,0 +1,11 @@
+grep -iw "red" ~/corpora/wiki/en_corpus_tokenized > texts/red.txt &
+grep -iw "yellow" ~/corpora/wiki/en_corpus_tokenized > texts/yellow.txt &
+grep -iw "blue" ~/corpora/wiki/en_corpus_tokenized > texts/blue.txt &
+grep -iw "brown" ~/corpora/wiki/en_corpus_tokenized > texts/brown.txt &
+grep -iw "orange" ~/corpora/wiki/en_corpus_tokenized > texts/orange.txt &
+grep -iw "green" ~/corpora/wiki/en_corpus_tokenized > texts/green.txt &
+grep -iw "violet" ~/corpora/wiki/en_corpus_tokenized > texts/violet.txt &
+grep -iw "black" ~/corpora/wiki/en_corpus_tokenized > texts/black.txt &
+grep -iw "pink" ~/corpora/wiki/en_corpus_tokenized > texts/pink.txt &
+grep -iw "white" ~/corpora/wiki/en_corpus_tokenized > texts/white.txt &
+grep -iw "gray" ~/corpora/wiki/en_corpus_tokenized > texts/gray.txt &
