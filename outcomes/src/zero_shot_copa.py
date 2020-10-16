@@ -12,16 +12,31 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 50
 
+# Padding text to help Transformer-XL and XLNet with short prompts as proposed by Aman Rusia
+# in https://github.com/rusiaaman/XLNet-gen#methodology
+# and https://medium.com/@amanrusia/xlnet-speaks-comparison-to-gpt-2-ea1a4e9ba39e
+PADDING_TEXT = """In 1991, the remains of Russian Tsar Nicholas II and his family
+(except for Alexei and Maria) are discovered.
+The voice of Nicholas's young son, Tsarevich Alexei Nikolaevich, narrates the
+remainder of the story. 1883 Western Siberia,
+a young Grigori Rasputin is asked by his father and a group of men to perform magic.
+Rasputin has a vision and denounces one of the men as a horse thief. Although his
+father initially slaps him for making such an accusation, Rasputin watches as the
+man is chased outside and beaten. Twenty years later, Rasputin sees a vision of
+the Virgin Mary, prompting him to become a priest. Rasputin quickly becomes famous,
+with people, even a bishop, begging for his blessing. <eod> </s> <eos>"""
+
 
 class ZeroShotCOPA:
     """
     Solves COPA by LM-scoring the answer candidates.
     """
-    def __init__(self, model, tokenizer, device):
+    def __init__(self, model, tokenizer, device, is_xlnet=False):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        self.is_xlnet = is_xlnet
 
     def get_lm_score(self, batch):
         """
@@ -52,6 +67,14 @@ class ZeroShotCOPA:
         supporting_statements = [self.get_supporting_statements(
             context, choices[i], choices[1 - i], question) for i in range(2)]
 
+        # XLNet padding trick
+        # (https://github.com/huggingface/transformers/blob/0866669e751bef636fa693b704a28c1fea9a17f3/examples/text-generation/run_generation.py#L62-L71)
+        if self.is_xlnet:
+            if self.is_xlnet:
+                supporting_statements = [
+                    [" ".join((PADDING_TEXT, statement)) for statement in curr_supporting_statements]
+                    for curr_supporting_statements in supporting_statements]
+
         tokenized = [[self.tokenizer.encode(text) for text in curr] for curr in supporting_statements]
         max_length = [max([len(text) for text in curr]) for curr in tokenized]
         tokenized = [[text + [self.pad_token_id] * (max_len - len(text)) for text in per_clar]
@@ -64,6 +87,16 @@ class ZeroShotCOPA:
         for batch_index in range(0, num_batches):
             curr_batch = [tokenized[i][batch_index * BATCH_SIZE:(batch_index + 1) * BATCH_SIZE]
                           for i in range(num_choices)]
+
+            # XLNet: predict same token, not next token
+            if self.is_xlnet:
+                curr_batch = [torch.cat(
+                    (instance, torch.zeros(
+                        (instance.shape[0], 1),
+                        dtype=torch.long, device=self.device)),
+                    dim=1)
+                    for instance in curr_batch]
+
             curr_batch = [torch.tensor(per_clar).long().to(self.device) for per_clar in curr_batch]
             curr_scores = [self.get_lm_score(clars_choice) for clars_choice in curr_batch]
             per_choice_score = [min(per_choice_score[i], curr_scores[i]) for i in range(num_choices)]

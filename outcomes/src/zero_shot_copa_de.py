@@ -19,8 +19,8 @@ class ZeroShotCOPAWithDE(ZeroShotCOPA):
     Gets sentences supporting the statement, e.g.
     [cause]. As a result, [effect].
     """
-    def __init__(self, model, tokenizer, device):
-        super().__init__(model, tokenizer, device)
+    def __init__(self, model, tokenizer, device, is_xlnet=False):
+        super().__init__(model, tokenizer, device, is_xlnet=is_xlnet)
         self.nlp = spacy.load("en_core_web_sm")
 
     @overrides
