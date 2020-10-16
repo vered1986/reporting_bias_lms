@@ -26,13 +26,41 @@ def main():
 
     device = torch.device(f"cuda:{args.device}") if args.device != "cpu" else torch.device("cpu")
 
-    for lm in ["openai-gpt", "gpt2", "gpt2-xl", "xlnet-base-cased", "xlnet-large-cased"]:
+    lms = ["openai-gpt", "gpt2", "gpt2-xl", "xlnet-base-cased", "xlnet-large-cased"]
+    results = {lm: {"with": None, "without": None} for lm in lms}
+    results["majority"] = {"without": 0.55, "with": 0.55}
+
+    for lm in lms:
         torch.cuda.empty_cache()
         model, tokenizer = init_model(lm, device)
         data = f"{args.copa_dir}/dev.jsonl"
-        acc_zs = solve(data, device, ZeroShotCOPA(model, tokenizer), f"copa/out_dev_zs_{lm}.jsonl")
-        acc_zsde = solve(data, device, ZeroShotCOPAWithDE(model, tokenizer), f"copa/out_dev_zsde_{lm}.jsonl")
-        print(f"LM: {lm},  without: {acc_zs:.3f}, with: {acc_zsde:.3f}")
+        acc_zs = solve(data, ZeroShotCOPA(model, tokenizer, device), f"../data/copa/out_dev_zs_{lm}.jsonl")
+        acc_zsde = solve(data, ZeroShotCOPAWithDE(model, tokenizer, device), f"../data/copa/out_dev_zsde_{lm}.jsonl")
+        results[lm] = {"with": acc_zsde, "without": acc_zs}
+
+    print_pred(results)
+
+
+def print_pred(results):
+    """
+    Print the LaTex table with the results
+    """
+    lm_display = {"majority": "Majority",
+                  "openai-gpt": "GPT",
+                  "gpt2": "GPT2-S",
+                  "gpt2-xl": "GPT2-XL",
+                  "xlnet-base-cased": "XLNet-S",
+                  "xlnet-large-cased": "XLNet-L"}
+    print("""\\begin{tabular}{lll}""")
+    print("""\\toprule""")
+    print("""\\textbf{LM} & \\textbf{Without} & \\textbf{With} \\\\""")
+    print("\\midrule")
+
+    for lm, curr_results in results.items():
+        print(f"{lm_display[lm]} & {results[lm]['without']:.2f} & {results[lm]['with']:.2f} \\\\""")
+
+    print("""\\bottomrule""")
+    print("""\\end{tabular}""")
 
 
 def solve(dataset_file, solver, out_file):

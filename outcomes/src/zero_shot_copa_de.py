@@ -19,8 +19,8 @@ class ZeroShotCOPAWithDE(ZeroShotCOPA):
     Gets sentences supporting the statement, e.g.
     [cause]. As a result, [effect].
     """
-    def __init__(self, model, tokenizer):
-        super().__init__(model, tokenizer)
+    def __init__(self, model, tokenizer, device):
+        super().__init__(model, tokenizer, device)
         self.nlp = spacy.load("en_core_web_sm")
 
     @overrides
@@ -29,7 +29,7 @@ class ZeroShotCOPAWithDE(ZeroShotCOPA):
         Gets sentences supporting the statement, e.g.
         [cause]. As a result, [effect].
         """
-        support = super().get_supporting_statements(context, choice, other_choice, question)
+        support = super().get_supporting_statements(context, choice, question)
 
         disconfirmed_markers = [f"{neg} {adv}".strip()
                                 for neg in ["yet,", "but", "however,"]
@@ -44,7 +44,7 @@ class ZeroShotCOPAWithDE(ZeroShotCOPA):
             sent1, sent2 = choice, context
 
         disconfirmed_expectations = []
-        negated = negate_last_verb(sent2)
+        negated = self.negate_last_verb(sent2)
 
         if negated is not None:
             sent2 = negated[0].lower() + negated[1:]
@@ -63,7 +63,6 @@ class ZeroShotCOPAWithDE(ZeroShotCOPA):
             doc = [t for t in self.nlp(statement)]
             last_verb_index = [i for i, t in enumerate(doc) if t.pos_ == "VERB"][-1]
             token = doc[last_verb_index]
-            verb = token.text
             morph_features = self.nlp.vocab.morphology.tag_map[token.tag_]
             if morph_features is not None:
                 morph_features = dict([key.split("_")

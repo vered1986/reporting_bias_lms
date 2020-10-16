@@ -47,7 +47,6 @@ class ZeroShotCOPA:
             context += "."
 
         question = fields['question']
-        label = fields.get('label', None)
         choices = [fields['choice1'], fields['choice2']]
 
         supporting_statements = [self.get_supporting_statements(
