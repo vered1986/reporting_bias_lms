@@ -177,7 +177,7 @@ def main():
 
     draw_event_frequencies(slice_odict(scaled, 0, 10), "A person is ____")
     draw_event_frequencies(slice_odict(scaled, 10, 20), legend=True)
-    kl_divergence(scaled)
+    print(kl_divergence(scaled))
 
     print_pred(bert_model,
                bert_tokenizer,
