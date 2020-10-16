@@ -1,6 +1,8 @@
 import os
+import json
 import torch
 import spacy
+import scipy
 import logging
 import argparse
 
@@ -8,7 +10,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
+from matplotlib.lines import Line2D
 
 from collections import OrderedDict
 from transformers import AutoTokenizer, AutoModelWithLMHead
@@ -20,15 +22,20 @@ logger = logging.getLogger(__name__)
 
 nlp = spacy.load("en_core_web_sm")
 
+AUX_VERBS = {"be", "can", "could", "dare", "do", "have", "may", "might",
+             "must", "need", "ought", "shall", "should", "will", "would"}
+
 
 def main():
     """
     Evaluate a LM on masked prediction of colors.
     """
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_name_or_path", type=str, help="Pretrained LM")
-    ap.add_argument("--eval_data_file", default=None, type=str, help="Evaluation data file")
+    ap.add_argument("--google_ngram_dir", type=str, required=True,
+                    help="directory to Google Ngram files. "
+                         "See https://github.com/vered1986/PythonUtils/tree/master/corpora/google_ngrams")
     ap.add_argument("--device", default="cpu", type=str, help="cpu or number for GPU device")
+    ap.add_argument("--k", default=5000, type=int, help="How many items to predict")
     args = ap.parse_args()
 
     device = torch.device(f"cuda:{args.device}") if args.device != "cpu" else torch.device("cpu")
@@ -40,6 +47,10 @@ def main():
     bert_tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
     bert_model = AutoModelWithLMHead.from_pretrained("bert-large-uncased")
     bert_model.to(device)
+
+    gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2-xl")
+    gpt2_model = AutoModelWithLMHead.from_pretrained("gpt2-xl")
+    gpt2_model.to(device)
 
     # Actual frequencies
     freq = dict([
@@ -104,32 +115,45 @@ def main():
                   }
 
     # Estimate probabilities with each knowledge source
-    with open("events.jsonl", "w") as f_out:
-        event_freq = {}
-        entity = "person"
+    event_freq = {}
+    entity = "person"
 
-        # Google Ngrams: search for "person is <verb>"
-        items = get_following_words(f"{entity} is", k=5000)
+    # Google Ngrams: search for "person is <verb>"
+    items = get_following_words(f"{entity} is", google_ngram_dir=args.google_ngram_dir, k=args.k)
+    items = filter_and_sort(nlp, items)
+
+    # Fall back to "person <verb>"
+    if len(items) == 0:
+        items = get_following_words(entity, google_ngram_dir=args.google_ngram_dir, k=args.k)
         items = filter_and_sort(nlp, items)
 
-        # Fall back to "person <verb>"
-        if len(items) == 0:
-            items = get_following_words(entity, k=5000)
-            items = filter_and_sort(nlp, items)
+    event_freq["gngrams"] = items
 
-        event_freq["gngrams"] = items
+    # BERT
+    items = get_top_k_predictions_masked_lm(
+        bert_model, bert_tokenizer,
+        ["The person is [MASK].", "The person [MASK].",
+         "People are [MASK].", "All people [MASK]."],
+        mask="[MASK]", k=args.k)
+    items = filter_and_sort(nlp, items)
+    event_freq["bert"] = items
 
-        # BERT
-        items = get_top_k_predictions(
-            bert_model, bert_tokenizer, f"The {entity} is [MASK].", mask="[MASK]", k=5000)
-        items = filter_and_sort(nlp, items)
-        event_freq["bert"] = items
+    # RoBERTa
+    items = get_top_k_predictions_masked_lm(
+        roberta_model, roberta_tokenizer,
+        ["The person is <mask>.", "The person <mask>.",
+         "People are <mask>.", "All people <mask>."],
+        mask="<mask>", k=args.k)
+    items = filter_and_sort(nlp, items)
+    event_freq["roberta"] = items
 
-        # RoBERTa
-        items = get_top_k_predictions(
-            roberta_model, roberta_tokenizer, f"The {entity} is <mask>.", mask="<mask>", k=5000)
-        items = filter_and_sort(nlp, items)
-        event_freq["roberta"] = items
+    # GPT2
+    items = get_top_k_predictions_lm(
+        gpt2_model, gpt2_tokenizer,
+        ["The person is ", "The person ", "People are ", "All people "],
+        k=args.k)
+    items = filter_and_sort(nlp, items)
+    event_freq["gpt2"] = items
 
     for resource in ["gngrams", "bert", "roberta"]:
         for key in freq.keys():
@@ -146,26 +170,45 @@ def main():
             scaled[label][resource] = freq[label][resource] / all_sum
 
     scaled = OrderedDict(sorted(scaled.items(), key=lambda x: freq[x[0]]["true"], reverse=True))
-    draw_event_frequencies(scaled, "A person is ____")
-    print_pred(bert_model, bert_tokenizer, roberta_model, roberta_tokenizer)
+
+    # Save to file
+    with open("actions.jsonl", "w") as f_out:
+        f_out.write(json.dumps(scaled) + "\n")
+
+    draw_event_frequencies(slice_odict(scaled, 0, 10), "A person is ____")
+    draw_event_frequencies(slice_odict(scaled, 10, 20), legend=True)
+    kl_divergence(scaled)
+
+    print_pred(bert_model,
+               bert_tokenizer,
+               roberta_model,
+               roberta_tokenizer,
+               gpt2_model,
+               gpt2_tokenizer)
 
 
-def get_top_k_predictions(bert_model, bert_tokenizer, text, mask="[MASK]", k=10):
+def get_top_k_predictions_masked_lm(bert_model, bert_tokenizer, texts, mask="[MASK]", k=10):
     """
     Find the best word to replace the mask, using BERT or RoBERTa.
     """
-    tokenized_text = bert_tokenizer.tokenize(text)
-    masked_index = [i for i, token in enumerate(tokenized_text) if token == mask][0]
-    indexed_tokens = bert_tokenizer.convert_tokens_to_ids(tokenized_text)
-    tokens_tensor = torch.tensor([indexed_tokens]).long().to(bert_model.device)
+    mask_id = bert_tokenizer.encode(mask, add_special_tokens=False)[0]
+    indexed_tokens = bert_tokenizer.batch_encode_plus(
+        texts, pad_to_max_length=True, max_length=10)['input_ids']
+    masked_indices = [[i for i, token in enumerate(instance)
+                       if token == mask_id][0] for instance in indexed_tokens]
+    tokens_tensor = torch.tensor(indexed_tokens).long().to(bert_model.device)
 
     bert_model.eval()
 
     with torch.no_grad():
-        outputs = bert_model(tokens_tensor)
-        predictions = outputs[0]
+        predictions = bert_model(tokens_tensor)[0]
 
-    probs = F.softmax(predictions[0, masked_index], dim=-1).cpu().numpy()
+    masked_token_probs = [
+        predictions[i, masked_index, :].cpu().numpy()
+        for i, masked_index in enumerate(masked_indices)]
+
+    probs = np.max(masked_token_probs, axis=0)
+    probs = scipy.special.softmax(probs, axis=-1)
     top_k_probs = np.argpartition(probs, -k)[-k:]
     top_k_probs = top_k_probs[np.argsort(probs[top_k_probs])[::-1]]
     tokens = [t.replace("Ġ", "") for t in bert_tokenizer.convert_ids_to_tokens(top_k_probs)]
@@ -173,18 +216,42 @@ def get_top_k_predictions(bert_model, bert_tokenizer, text, mask="[MASK]", k=10)
     return top_k_probs
 
 
-def get_following_words(phrase, google_ngram_dir='~/corpora/google_ngrams'):
+def get_top_k_predictions_lm(model, tokenizer, texts, k=10):
+    """
+    Find the best word to continue the sentence.
+    """
+    next_token_logits = []
+    for text in texts:
+        context_tokens = tokenizer.encode(text)
+        input_ids = torch.tensor(context_tokens, device=model.device).unsqueeze(0)
+
+        model.eval()
+
+        with torch.no_grad():
+            outputs = model(input_ids)
+            next_token_logits.append(outputs[0][:, -1, :].cpu().numpy())
+
+    probs = np.max(np.vstack(next_token_logits), axis=0)
+    probs = scipy.special.softmax(probs, axis=-1)
+    top_k_probs = np.argpartition(probs, -k)[-k:]
+    top_k_probs = top_k_probs[np.argsort(probs[top_k_probs])[::-1]]
+    tokens = [t.replace("Ġ", "").lower() for t in tokenizer.convert_ids_to_tokens(top_k_probs)]
+    top_k_probs = list(zip(tokens, [probs[i] for i in top_k_probs]))
+    return top_k_probs
+
+
+def get_following_words(phrase, google_ngram_dir, k=-1):
     """
     Searches for occurrences that start with `phrase` in Google Ngrams.
-    Assumes a Google Ngram corpus under ~/corpora.
+    :google_ngram_dir: a Google Ngram directory. See
+    `https://github.com/vered1986/PythonUtils/tree/master/corpora/google_ngrams`
     """
-    google_ngram_dir = os.path.expanduser(google_ngram_dir)
     phrase = phrase.lower()
     phrase_words = phrase.split()
-    n = len(phrase_words) + 1
+    n = 5
     prefix = phrase[:2]
     results = []
-    curr_ngram_file = f'{google_ngram_dir}/googlebooks-eng-all-{n}gram-20120701-{prefix}_filtered'
+    curr_ngram_file = os.path.join(google_ngram_dir, f"googlebooks-eng-all-{n}gram-20120701-{prefix}_filtered")
 
     # No file for this prefix
     if not os.path.exists(curr_ngram_file):
@@ -197,9 +264,9 @@ def get_following_words(phrase, google_ngram_dir='~/corpora/google_ngrams'):
             ngram, count = line.lower().strip().split('\t')
             words = ngram.split()
 
-            if n == 3:
+            if len(phrase_words) > 1:
                 if (words[0] > phrase_words[0] and not phrase_words[0] in words[0]) or \
-                        (words[0] == phrase_words[0] and phrase_words[1] not in words[1] and \
+                        (words[0] == phrase_words[0] and phrase_words[1] not in words[1] and
                          words[1] > phrase_words[1]):
                     break
                 elif words[0] == phrase_words[0] and words[1] == phrase_words[1]:
@@ -207,13 +274,17 @@ def get_following_words(phrase, google_ngram_dir='~/corpora/google_ngrams'):
                 else:
                     continue
 
-            elif n == 2:
+            else:
                 if words[0] > phrase_words[0] and not phrase_words[0] in words[0]:
                     break
                 elif words[0] == phrase_words[0]:
                     results.append((words[-1], float(count)))
                 else:
                     continue
+
+    # Limit the number of results
+    if k > 0:
+        results = results[:k+1]
 
     return results
 
@@ -222,13 +293,11 @@ def filter_and_sort(nlp, items):
     """
     Only keep non-auxiliary verbs, sort by descending score
     """
-    docs = [nlp(f"The person {item}.") for item, count in items]
+    docs = [nlp(f"The person {item.lower()}.") for item, count in items]
     verbs = [(item, count)
              for (item, count), doc in zip(items, docs)
              if "##" not in item and
-             item not in {"be", "can", "could", "dare", "do", "have", "may", "might",
-                          "must", "need", "ought", "shall", "should", "will", "would"} and
-             [t.pos_ for t in doc][-2] == "VERB"]
+             item not in AUX_VERBS and [t.pos_ for t in doc][-2] == "VERB"]
 
     # Normalize and sort
     all_sum = np.sum([count for _, count in verbs])
@@ -238,86 +307,135 @@ def filter_and_sort(nlp, items):
     return curr_items
 
 
-def draw_event_frequencies(freq, title):
+def draw_event_frequencies(freq, title=None, legend=False):
     """
     Draw the event frequencies
     """
-    sns.set(color_codes=True)
-    sns.set_style("dark")
-    plt.rc("text", usetex=False)
-    sns.despine(left=True)
-
-    resources = ["roberta", "bert", "gngrams", "true"]
+    sns.set_style("white")
+    resources = ["true", "gngrams", "bert", "roberta", "gpt2"]
     labels = list(freq.keys())
     items = {label: [freq[label][resource] for resource in resources] for label in labels}
 
     x = np.arange(len(labels))
     y = np.arange(len(resources))
-    plt.figure(figsize=(24, 6))
+    plt.figure(figsize=(int(len(freq) * 2), 2))
+    plt.box(on=None)
     w = 0.5
 
-    colors = ["purple", "green", "orange", "blue"]
+    resource_names = ["Actual", "Google Ngrams", "BERT", "RoBERTa", "GPT2"]
+    colors = sns.color_palette("colorblind", len(resources))
+    styles = ["-", ":", "--", "--", "--"]
 
     df = pd.DataFrame({
         'X': [i for i in range(len(labels)) for j in range(len(resources))],
-        'Y': [j for i in range(len(labels)) for j in range(len(resources))],
-        'colors': [colors[j] for i in range(len(labels)) for j in range(len(resources))],
-        "bubble_size": np.array([items[label][i] for label in labels for i in range(len(resources))]) * 7500})
+        'Y': [0 for i in range(len(labels)) for j in range(len(resources))],
+        "bubble_size": np.array([items[label][i] for label in labels for i in range(len(resources))]) * 15000,
+        "linestyle": [styles[j] for i in range(len(labels)) for j in range(len(resources))]
+    })
 
-    plt.scatter('X', 'Y', s='bubble_size', c='colors', alpha=0.2, data=df)
+    plt.scatter('X', 'Y', s='bubble_size', facecolors='none',
+                edgecolors=colors, data=df,
+                linestyle=df['linestyle'], linewidth=2)
 
-    resource_names = ["RoBERTa", "BERT", "Google Ngrams", "Actual"]
+    if title is not None:
+        plt.title(title, fontsize=22)
 
-    plt.title(title, fontsize=22)
-    plt.xlim(-1, len(labels) - 0.5)
-    plt.ylim(-.5, len(resources) - 0.25)
-    plt.yticks(y, resource_names, fontsize=16)
-    plt.xticks(x + w / 2, [label.replace(" ", "\n") for label in labels], rotation='vertical', fontsize=16)
-    plt.savefig("a_person_is.png", format="png", bbox_inches="tight")
+    plt.xlim(-0.5, len(labels) - 0.5)
+    plt.ylim(-.1, .1)
+    plt.yticks([])
+    plt.xticks(x - .2 + w / 2, [label.replace(" ", "\n") for label in labels], fontsize=16)
+
+    if legend:
+        handles = [Line2D(
+            [0], [0], color=colors[i], linewidth=2,
+            label=resource_names[i], markersize=18, linestyle=styles[i])
+            for i in range(len(resource_names))]
+        plt.legend(handles=handles, loc='upper center',
+                   bbox_to_anchor=(0.22, -0.65), ncol=len(resources))
+
     plt.show()
 
 
-def print_pred(bert_model, bert_tokenizer, roberta_model, roberta_tokenizer):
+def print_pred(bert_model,
+               bert_tokenizer,
+               roberta_model,
+               roberta_tokenizer,
+               gpt2_model,
+               gpt2_tokenizer):
     """
     Print the LaTex table with the predictions
     """
-    print("""\\begin{tabular}{c c c c c c}""")
+    print("""\\begin{tabular}{llllllllllll}""")
     print("""\\toprule""")
-    print("""& \\textbf{BERT} & \\textbf{RoBERTa} & & \\textbf{BERT} & \\textbf{RoBERTa} \\\\""")
+    print("""& \\textbf{BERT} & \\textbf{RoBERTa} & \\textbf{GPT-2} & & 
+             & \\textbf{BERT} & \\textbf{RoBERTa} & \\textbf{GPT-2} \\\\""")
     print("\\midrule")
 
-    templates = ["People are [MASK] every day.", "All people are [MASK].",
-                 "Most people are [MASK].", "Some people are [MASK]."]
+    templates = ["The person [MASK].",
+                 "The person is [MASK]."]
     results = {template: {} for template in templates}
 
     for template in templates:
         # BERT
-        items = get_top_k_predictions(bert_model, bert_tokenizer, template, mask="[MASK]", k=500)
+        items = get_top_k_predictions_masked_lm(
+            bert_model, bert_tokenizer, [template], mask="[MASK]", k=500)
         items = filter_and_sort(nlp, items)
         results[template]["bert"] = [(e, str(c)) for e, c in items][:10]
 
         # RoBERTa
-        items = get_top_k_predictions(
-            roberta_model, roberta_tokenizer, template.replace("[MASK]", "<mask>"), mask="<mask>", k=500)
+        items = get_top_k_predictions_masked_lm(
+            roberta_model, roberta_tokenizer,
+            [template.replace("[MASK]", "<mask>")], mask="<mask>", k=500)
         items = filter_and_sort(nlp, items)
         results[template]["roberta"] = [(e, str(c)) for e, c in items][:10]
 
-    for t1, t2 in [templates[:2], templates[2:]]:
-        t1_text = "\\multirow{10}{*}{" + t1.replace("[MASK]", "\\underline{~~~~~}") + "} "
-        t2_text = "\\multirow{10}{*}{" + t2.replace("[MASK]", "\\underline{~~~~~}") + "} "
+        # GPT2
+        items = get_top_k_predictions_lm(
+            gpt2_model, gpt2_tokenizer, templates, k=500)
+        items = filter_and_sort(nlp, items)
+        results[template]["gpt2"] = \
+            [(e, str(c)) for e, c in items if e != "ċċ"][:10]
 
-        for (b1, bc1), (r1, rc1), (b2, bc2), (r2, rc2) in zip(
-                results[t1]["bert"], results[t1]["roberta"], results[t2]["bert"], results[t2]["roberta"]):
-            r1, r2 = map(str.lower, [r1, r2])
-            bc1, rc1, bc2, rc2 = map(float, [bc1, rc1, bc2, rc2])
-            print(
-                f"{t1_text} & {b1} ({bc1:.3f}) & {r1} ({rc1:.3f}) & {t2_text} & {b2} ({bc2:.3f}) & {r2} ({rc2:.3f}) \\\\")
-            t1_text = t2_text = ""
+    template_displays = [
+        "\\multirow{10}{*}{\\specialcellleft{" +
+        "\\\\".join(t.replace("[MASK]", "\\underline{~~~~~}").split()) + "}} "
+        for t in templates]
 
-        print("\\midrule")
+    for i in range(10):
+        for j, template in enumerate(templates):
+            print(f"{template_displays[j] if i == 0 else ''} & ", end="")
+            print(f"{results[template]['bert'][i][0]} ({100 * float(results[template]['bert'][i][1]):.1f}) & ", end="")
+            print(f"{results[template]['roberta'][i][0]} ({100 * float(results[template]['roberta'][i][1]):.1f}) & ",
+                  end="")
+            print(f"{results[template]['gpt2'][i][0]} ({100 * float(results[template]['gpt2'][i][1]):.1f}) & ", end="")
 
+        print("\\\\")
     print("""\\bottomrule""")
-    print("""\end{tabular}""")
+    print("""\\end{tabular}""")
+
+
+def slice_odict(odict, start=None, end=None):
+    return OrderedDict([
+        (k,v) for (k,v) in odict.items()
+        if k in list(odict.keys())[start:end]
+    ])
+
+
+def kl_divergence(frequencies):
+    """
+    Computes the KL divergence of each distribution with
+    the actual distribution
+    """
+    epsilon = 0.0000001
+    resources = ["true", "gngrams", "bert", "roberta"]
+    by_resource = {resource:
+        np.array([
+            max(epsilon, frequencies[action][resource])
+            for action in frequencies.keys()])
+        for resource in resources}
+
+    for resource in resources[1:]:
+        print(resource, scipy.stats.entropy(by_resource['true'], by_resource[resource]))
 
 
 if __name__ == '__main__':
