@@ -1,5 +1,9 @@
 ## Data:
 
+Download the [color dataset](https://drive.google.com/file/d/13YNhqM7JyMgwC-nxJn0LKYSfdezcflfP/view?usp=sharing).
+
+Alternatively, to re-create it:
+
 Assuming you have a tokenized version of Wikipedia, e.g. at `~/corpora/wiki/en_corpus_tokenized`:
 
 Create directory `texts` and run `grep_colors.sh` to obtain sentences for each color. 
