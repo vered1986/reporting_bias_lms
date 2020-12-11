@@ -155,7 +155,7 @@ def main():
     items = filter_and_sort(nlp, items)
     event_freq["gpt2"] = items
 
-    for resource in ["gngrams", "bert", "roberta"]:
+    for resource in ["gngrams", "bert", "gpt2", "roberta"]:
         for key in freq.keys():
             count = np.sum(
                 [dict(event_freq[resource]).get(variation, 0) for variation in variations[key]])
@@ -164,7 +164,7 @@ def main():
     # Scale it
     scaled = {label: {} for label in freq.keys()}
 
-    for resource in ["roberta", "bert", "gngrams", "true"]:
+    for resource in ["roberta", "bert", "gpt2", "gngrams", "true"]:
         all_sum = np.sum([freq[l][resource] for l in freq.keys()])
         for label in freq.keys():
             scaled[label][resource] = freq[label][resource] / all_sum
@@ -367,7 +367,7 @@ def print_pred(bert_model,
     """
     print("""\\begin{tabular}{llllllllllll}""")
     print("""\\toprule""")
-    print("""& \\textbf{BERT} & \\textbf{RoBERTa} & \\textbf{GPT-2} & & 
+    print("""& \\textbf{BERT} & \\textbf{RoBERTa} & \\textbf{GPT-2} &  
              & \\textbf{BERT} & \\textbf{RoBERTa} & \\textbf{GPT-2} \\\\""")
     print("\\midrule")
 
