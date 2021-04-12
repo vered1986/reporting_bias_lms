@@ -30,6 +30,7 @@ python  -m colors.src.fine_tune \
         --train_data_file data/train.jsonl \
         --eval_data_file data/dev.jsonl \
         --do_eval \
+        --do_train \ 
         --per_gpu_eval_batch_size 8 \
         --device 0 
 ```
