@@ -13,7 +13,7 @@ jupyter-core==4.6.3
 matplotlib==3.2.2
 nltk==3.6.5
 notebook==6.4.1
-numpy==1.18.5
+numpy==1.21.0
 overrides==3.1.0
 pandas==1.0.5
 Pattern==3.6
