@@ -23,7 +23,7 @@ Run `python -m outcomes.src.solve_copa --device=[device] --copa_dir=outcomes/dat
 
 ## 3. Properties
 
-See [color/README.md](color/README.md).
+See [colors/src/README.md](colors/src/README.md).
 
 #### How to cite this repository?
 
