@@ -19,7 +19,7 @@ pandas==1.0.5
 Pattern==3.6
 pyinflect==0.5.1
 scikit-learn==0.23.1
-scipy==1.5.0
+scipy==1.10.0
 seaborn==0.10.1
 sklearn==0.0
 spacy==2.3.0
