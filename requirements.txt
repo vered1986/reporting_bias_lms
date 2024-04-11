@@ -27,5 +27,5 @@ tensorboardX==2.0
 torch==1.13.1
 torchvision
 tqdm==4.46.1
-transformers==4.36.0
+transformers==4.38.0
 orderedset
