@@ -26,6 +26,6 @@ spacy==2.3.0
 tensorboardX==2.0
 torch==1.13.1
 torchvision
-tqdm==4.46.1
+tqdm==4.66.3
 transformers==4.38.0
 orderedset
